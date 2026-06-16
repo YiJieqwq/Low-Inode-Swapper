@@ -5,7 +5,7 @@
 #  项目链接: https://github.com/YiJieqwq/Inode-Hijacker
 # ============================================================
 
-TARGET="${1:-/data/local/test_tmp}"
+TARGET="${1:-/data/local/tmp}"
 WORK_DIR="$(dirname "$TARGET")"
 MAX_INODE="${2:-10000}"
 

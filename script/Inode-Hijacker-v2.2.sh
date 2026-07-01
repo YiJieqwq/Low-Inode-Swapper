@@ -13,7 +13,10 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 DIM='\033[2m'
 
-die()  { echo -e "\n${RED}[✗] $*${NC}" >&2; exit 1; }
+die()  {
+    rm -f "$TMP_SAFE" "$TMP_CAUT" "$TMP_UNKN" 2>/dev/null
+    echo -e "\n${RED}[✗] $*${NC}" >&2; exit 1;
+}
 warn() { echo -e "${YELLOW}[!] $*${NC}" >&2; }
 
 # ======================== SELinux 检测与恢复 ========================
@@ -32,10 +35,12 @@ restore_ctx() {
     restorecon $_flags "$_path" 2>/dev/null || true
 }
 
-# get_ctx <path> — 获取 SELinux 上下文（不可用时返回空）
+# get_ctx <path> — 获取 SELinux 上下文（不可用时返回 N/A）
 get_ctx() {
     [ "$SELINUX_AVAILABLE" -eq 0 ] && { echo "N/A"; return; }
-    ls -Zd "$1" 2>/dev/null | awk '{print $1}' || echo "unknown"
+    local ctx
+    ctx=$(ls -Zd "$1" 2>/dev/null | awk '{print $1}') || true
+    echo "${ctx:-unknown}"
 }
 
 # ======================== 风险知识库 ========================
@@ -116,6 +121,7 @@ BEST_IDX=""; BEST_INODE=999999; BEST_NAME=""; BEST_RISK=""
 TMP_SAFE="${WORK_DIR}/.hijack_safe"
 TMP_CAUT="${WORK_DIR}/.hijack_caut"
 TMP_UNKN="${WORK_DIR}/.hijack_unkn"
+trap 'rm -f "$TMP_SAFE" "$TMP_CAUT" "$TMP_UNKN" 2>/dev/null' EXIT
 
 for dir in /data/*/; do
     [ ! -d "$dir" ] && continue
@@ -271,7 +277,7 @@ mv "$CHOSEN_DIR" "$TARGET" && echo -e "${GREEN}✓${NC}" || {
 restore_ctx "$TARGET" "-RF"
 
 echo -n "  ③ 重建捐献者… "
-mkdir "$CHOSEN_DIR" 2>/dev/null || warn "重建失败"
+mkdir "$CHOSEN_DIR" 2>/dev/null || die "重建捐献者目录失败"
 chmod  "$DONOR_PERM"             "$CHOSEN_DIR" 2>/dev/null
 chown  "${DONOR_OWNER}:${DONOR_GROUP}" "$CHOSEN_DIR" 2>/dev/null
 # ★ 新建的空目录需要从 file_contexts 获取正确上下文

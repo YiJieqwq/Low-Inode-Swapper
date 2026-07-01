@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # ============================================================
-#  Inode Hijacker v2.1 — 修复 awk 语法 + 简化推荐逻辑
+#  Inode Hijacker v2.2 — 完善 SELinux 上下文修复
 #  作者: YiJieqwq异界 基于MIT协议开源
 #  项目链接: https://github.com/YiJieqwq/Inode-Hijacker
 # ============================================================
@@ -15,6 +15,28 @@ DIM='\033[2m'
 
 die()  { echo -e "\n${RED}[✗] $*${NC}" >&2; exit 1; }
 warn() { echo -e "${YELLOW}[!] $*${NC}" >&2; }
+
+# ======================== SELinux 检测与恢复 ========================
+SELINUX_AVAILABLE=0
+if command -v restorecon >/dev/null 2>&1; then
+    if [ -d "/sys/fs/selinux" ] || [ -f "/sys/fs/selinux/enforce" ]; then
+        SELINUX_AVAILABLE=1
+    fi
+fi
+
+# restore_ctx <path> [flags]
+# 安全恢复 SELinux 上下文，自动处理不可用情况
+restore_ctx() {
+    [ "$SELINUX_AVAILABLE" -eq 0 ] && return 0
+    local _path="$1"; local _flags="${2:--RF}"
+    restorecon $_flags "$_path" 2>/dev/null || true
+}
+
+# get_ctx <path> — 获取 SELinux 上下文（不可用时返回空）
+get_ctx() {
+    [ "$SELINUX_AVAILABLE" -eq 0 ] && { echo "N/A"; return; }
+    ls -Zd "$1" 2>/dev/null | awk '{print $1}' || echo "unknown"
+}
 
 # ======================== 风险知识库 ========================
 eval_risk() {
@@ -72,7 +94,7 @@ eval_risk() {
 # ======================== 启动 ========================
 clear
 echo -e "\n${BOLD}${CYAN}  ╔══════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}${CYAN}  ║           Inode Hijacker v2.1            ║${NC}"
+echo -e "${BOLD}${CYAN}  ║           Inode Hijacker v2.2            ║${NC}"
 echo -e "${BOLD}${CYAN}  ║    智能候选 · 风险分级 · 秒级交换        ║${NC}"
 echo -e "${BOLD}${CYAN}  ║    作者: YiJieqwq异界  基于MIT协议开源   ║${NC}"
 echo -e "${BOLD}${CYAN}  ╚══════════════════════════════════════════╝${NC}\n"
@@ -220,9 +242,11 @@ echo -e "\n  ${YELLOW}[▶]${NC} 执行交换…"
 OLD_PERM=$(stat  -c '%a' "$TARGET"     2>/dev/null || echo "771")
 OLD_OWNER=$(stat -c '%U' "$TARGET"     2>/dev/null || echo "shell")
 OLD_GROUP=$(stat -c '%G' "$TARGET"     2>/dev/null || echo "shell")
+OLD_CTX=$(get_ctx "$TARGET")
 DONOR_PERM=$(stat  -c '%a' "$CHOSEN_DIR" 2>/dev/null || echo "755")
 DONOR_OWNER=$(stat -c '%U' "$CHOSEN_DIR" 2>/dev/null || echo "root")
 DONOR_GROUP=$(stat -c '%G' "$CHOSEN_DIR" 2>/dev/null || echo "root")
+DONOR_CTX=$(get_ctx "$CHOSEN_DIR")
 
 DONOR_BACKUP="${WORK_DIR}/.donor_bak_$$"
 DONOR_HAS_CONTENT=0
@@ -243,12 +267,15 @@ echo -n "  ② mv ${CHOSEN_DIR} → ${TARGET}… "
 mv "$CHOSEN_DIR" "$TARGET" && echo -e "${GREEN}✓${NC}" || {
     mv "$HOLD" "$TARGET" 2>/dev/null; die "第二步失败，已回滚"
 }
+# ★ 捐献者内容已迁入目标路径，必须强制重置 SELinux 上下文
+restore_ctx "$TARGET" "-RF"
 
 echo -n "  ③ 重建捐献者… "
 mkdir "$CHOSEN_DIR" 2>/dev/null || warn "重建失败"
 chmod  "$DONOR_PERM"             "$CHOSEN_DIR" 2>/dev/null
 chown  "${DONOR_OWNER}:${DONOR_GROUP}" "$CHOSEN_DIR" 2>/dev/null
-restorecon -R "$CHOSEN_DIR" 2>/dev/null || true
+# ★ 新建的空目录需要从 file_contexts 获取正确上下文
+restore_ctx "$CHOSEN_DIR" "-RF"
 echo -e "${GREEN}✓${NC}"
 
 [ "$DONOR_HAS_CONTENT" -eq 1 ] && [ -d "$DONOR_BACKUP" ] && {
@@ -256,19 +283,24 @@ echo -e "${GREEN}✓${NC}"
     cp -a "$DONOR_BACKUP"/*       "$CHOSEN_DIR"/ 2>/dev/null
     cp -a "$DONOR_BACKUP"/.[!.]*  "$CHOSEN_DIR"/ 2>/dev/null
     rm -rf "$DONOR_BACKUP"
+    # ★ 备份内容拷回新目录后，强制重置 SELinux 上下文
+    restore_ctx "$CHOSEN_DIR" "-RF"
     echo -e "${GREEN}✓${NC}"
 }
 
 chmod  "$OLD_PERM"               "$TARGET" 2>/dev/null || true
 chown  "${OLD_OWNER}:${OLD_GROUP}"   "$TARGET" 2>/dev/null || true
-restorecon -R "$TARGET" 2>/dev/null || true
+# ★ 最终确保目标路径 SELinux 上下文正确
+restore_ctx "$TARGET" "-RF"
 rm -rf "$HOLD" 2>/dev/null
 
 FINAL_INODE=$(stat -c '%i' "$TARGET" 2>/dev/null)
+FINAL_CTX=$(get_ctx "$TARGET")
 
 echo -e "\n  ${BOLD}${GREEN}╔════════════════════════${NC}"
 echo -e "  ${BOLD}${GREEN}║    操作完成 ✓          ${NC}"
 echo -e "  ${BOLD}${GREEN}╚════════════════════════${NC}\n"
 echo -e "  inode:  ${RED}${CURRENT_INODE}${NC} → ${GREEN}${FINAL_INODE}${NC}"
 echo -e "  来源:   ${CYAN}/data/${CHOSEN_NAME}${NC}（已重建）"
+echo -e "  SELinux: ${DIM}${OLD_CTX}${NC} → ${GREEN}${FINAL_CTX}${NC}"
 echo -e "  耗时:   < 1 秒\n"
